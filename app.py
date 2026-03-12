@@ -1,18 +1,17 @@
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
+from gtts import gTTS
 import requests
 import os
 import json
 import re
+import io
 
 app = Flask(__name__)
 CORS(app, origins="*")
 
-MISTRAL_API_KEY    = os.environ.get("MISTRAL_API_KEY", "")
-ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
-ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")  # Japanese voice ID
-MISTRAL_URL        = "https://api.mistral.ai/v1/chat/completions"
-ELEVENLABS_URL     = "https://api.elevenlabs.io/v1/text-to-speech"
+MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
+MISTRAL_URL     = "https://api.mistral.ai/v1/chat/completions"
 
 SYSTEM_PROMPT = """You are Sensei Yuki, a warm and encouraging Japanese language teacher for Vietnamese learners.
 
@@ -86,38 +85,16 @@ def chat():
 
 @app.route("/tts", methods=["POST"])
 def tts():
-    if not ELEVENLABS_API_KEY:
-        return jsonify({"error": "ELEVENLABS_API_KEY not set"}), 500
-    if not ELEVENLABS_VOICE_ID:
-        return jsonify({"error": "ELEVENLABS_VOICE_ID not set"}), 500
-
     text = request.json.get("text", "").strip()
     if not text:
         return jsonify({"error": "no text"}), 400
-
-    resp = requests.post(
-        f"{ELEVENLABS_URL}/{ELEVENLABS_VOICE_ID}",
-        headers={
-            "xi-api-key": ELEVENLABS_API_KEY,
-            "Content-Type": "application/json",
-            "Accept": "audio/mpeg"
-        },
-        json={
-            "text": text,
-            "model_id": "eleven_turbo_v2_5",  # best model for Japanese
-            "voice_settings": {
-                "stability": 0.5,
-                "similarity_boost": 0.75,
-                "style": 0.3,
-                "use_speaker_boost": True
-            }
-        }
-    )
-
-    if not resp.ok:
-        return jsonify({"error": resp.text}), resp.status_code
-
-    return Response(resp.content, mimetype="audio/mpeg")
+    try:
+        buf = io.BytesIO()
+        gTTS(text=text, lang="ja", slow=False).write_to_fp(buf)
+        buf.seek(0)
+        return Response(buf.read(), mimetype="audio/mpeg")
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/health")

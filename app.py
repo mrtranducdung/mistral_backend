@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import requests
 import os
@@ -8,16 +8,11 @@ import re
 app = Flask(__name__)
 CORS(app, origins="*")
 
-MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
-GOOGLE_TTS_KEY  = os.environ.get("GOOGLE_TTS_KEY", "")
-MISTRAL_URL     = "https://api.mistral.ai/v1/chat/completions"
-GOOGLE_TTS_URL  = "https://texttospeech.googleapis.com/v1/text:synthesize"
-
-# Google TTS voice options
-VOICES = {
-    "female": "ja-JP-Neural2-B",
-    "male":   "ja-JP-Neural2-C",
-}
+MISTRAL_API_KEY    = os.environ.get("MISTRAL_API_KEY", "")
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")  # Japanese voice ID
+MISTRAL_URL        = "https://api.mistral.ai/v1/chat/completions"
+ELEVENLABS_URL     = "https://api.elevenlabs.io/v1/text-to-speech"
 
 SYSTEM_PROMPT = """You are Sensei Yuki, a warm and encouraging Japanese language teacher for Vietnamese learners.
 
@@ -31,8 +26,8 @@ SYSTEM_PROMPT = """You are Sensei Yuki, a warm and encouraging Japanese language
 ## Response format
 Always reply as a JSON object with this exact structure — no extra text outside JSON:
 {{
-  "reply_text": "The full reply to DISPLAY (mix of Japanese + romaji hints as needed). If replying in Vietnamese, write Vietnamese here.",
-  "tts_text": "The Japanese text to READ ALOUD via TTS. If the reply is fully Vietnamese, extract or compose a short relevant Japanese sentence/phrase to read. Never leave this empty.",
+  "reply_text": "The full reply to DISPLAY. Japanese with furigana hints if needed, or Vietnamese if explaining.",
+  "tts_text": "The Japanese text to READ ALOUD. If reply is in Vietnamese, compose a short relevant Japanese sentence. Never empty.",
   "romaji": "Romaji of tts_text",
   "translation": "Vietnamese meaning of tts_text"
 }}
@@ -49,10 +44,10 @@ Always reply as a JSON object with this exact structure — no extra text outsid
 """
 
 LEVEL_INSTRUCTIONS = {
-    "beginner":       "Student is a complete beginner. Use ONLY hiragana + very simple words (JLPT N5). Always add romaji for every Japanese word in reply_text. Speak very slowly and simply.",
-    "elementary":     "Student knows basic Japanese (JLPT N5-N4). Use simple kanji with furigana hints. Keep sentences short.",
-    "intermediate":   "Student is intermediate (JLPT N3-N4). Use natural Japanese, kanji with occasional furigana for harder words. Normal pace.",
-    "advanced":       "Student is advanced (JLPT N1-N2). Use natural, nuanced Japanese. Minimal furigana. Can discuss complex topics.",
+    "beginner":     "Complete beginner. Use ONLY hiragana + very simple words (JLPT N5). Always add romaji for every word in reply_text. Speak very slowly and simply.",
+    "elementary":   "Basic Japanese (JLPT N5-N4). Simple kanji with furigana. Short sentences.",
+    "intermediate": "Intermediate (JLPT N3-N4). Natural Japanese, kanji with occasional furigana. Normal pace.",
+    "advanced":     "Advanced (JLPT N1-N2). Natural, nuanced Japanese. Minimal furigana. Complex topics OK.",
 }
 
 def extract_json(text):
@@ -69,9 +64,7 @@ def chat():
     history = data.get("history", [])
     level   = data.get("level", "beginner")
 
-    level_instruction = LEVEL_INSTRUCTIONS.get(level, LEVEL_INSTRUCTIONS["beginner"])
-    system = SYSTEM_PROMPT.format(level_instruction=level_instruction)
-
+    system   = SYSTEM_PROMPT.format(level_instruction=LEVEL_INSTRUCTIONS.get(level, LEVEL_INSTRUCTIONS["beginner"]))
     messages = [{"role": "system", "content": system}] + history
 
     resp = requests.post(
@@ -91,8 +84,40 @@ def chat():
     return jsonify(parsed)
 
 
-# TTS is now handled entirely in the browser via Web Speech API (ja-JP)
-# No backend TTS endpoint needed
+@app.route("/tts", methods=["POST"])
+def tts():
+    if not ELEVENLABS_API_KEY:
+        return jsonify({"error": "ELEVENLABS_API_KEY not set"}), 500
+    if not ELEVENLABS_VOICE_ID:
+        return jsonify({"error": "ELEVENLABS_VOICE_ID not set"}), 500
+
+    text = request.json.get("text", "").strip()
+    if not text:
+        return jsonify({"error": "no text"}), 400
+
+    resp = requests.post(
+        f"{ELEVENLABS_URL}/{ELEVENLABS_VOICE_ID}",
+        headers={
+            "xi-api-key": ELEVENLABS_API_KEY,
+            "Content-Type": "application/json",
+            "Accept": "audio/mpeg"
+        },
+        json={
+            "text": text,
+            "model_id": "eleven_turbo_v2_5",  # best model for Japanese
+            "voice_settings": {
+                "stability": 0.5,
+                "similarity_boost": 0.75,
+                "style": 0.3,
+                "use_speaker_boost": True
+            }
+        }
+    )
+
+    if not resp.ok:
+        return jsonify({"error": resp.text}), resp.status_code
+
+    return Response(resp.content, mimetype="audio/mpeg")
 
 
 @app.route("/health")

@@ -37,17 +37,14 @@ def ensure(filename, repo_filename=None):
 
 ONNX_PATH   = ensure("kokoro-v1.0.onnx")
 VOICES_PATH = ensure("voices-v1.0.bin")
-ALPHA_PATH  = ensure("jf_alpha.pt",      "voices/jf_alpha.pt")
-GONG_PATH   = ensure("jf_gongitsune.pt", "voices/jf_gongitsune.pt")
-KUMO_PATH   = ensure("jm_kumo.pt",       "voices/jm_kumo.pt")
 
 # ── Load Kokoro once at startup ───────────────────────────────────────────────
 kokoro = Kokoro(ONNX_PATH, VOICES_PATH)
 
 VOICES = {
-    "jf_alpha":      torch.load(ALPHA_PATH, weights_only=True).numpy(),
-    "jf_gongitsune": torch.load(GONG_PATH,  weights_only=True).numpy(),
-    "jm_kumo":       torch.load(KUMO_PATH,  weights_only=True).numpy(),
+    "jf_alpha":      torch.load(os.path.join(BASE_DIR, "jf_alpha.pt"),      weights_only=True).numpy(),
+    "jf_gongitsune": torch.load(os.path.join(BASE_DIR, "jf_gongitsune.pt"), weights_only=True).numpy(),
+    "jm_kumo":       torch.load(os.path.join(BASE_DIR, "jm_kumo.pt"),       weights_only=True).numpy(),
 }
 DEFAULT_VOICE = "jf_alpha"
 

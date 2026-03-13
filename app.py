@@ -1,9 +1,24 @@
+import os, sys, subprocess, shutil
+
+# ── Setup unidic on persistent disk BEFORE importing misaki ──────────────────
+_MODELS_DIR  = os.environ.get("MODELS_DIR", os.path.dirname(os.path.abspath(__file__)))
+_UNIDIC_DIR  = os.path.join(_MODELS_DIR, "unidic_dicdir")
+
+if not os.path.exists(os.path.join(_UNIDIC_DIR, "mecabrc")):
+    print("⬇️  Downloading unidic dictionary...")
+    subprocess.run([sys.executable, "-m", "unidic", "download"], check=True)
+    import unidic as _u
+    os.makedirs(_UNIDIC_DIR, exist_ok=True)
+    shutil.copytree(_u.DICDIR, _UNIDIC_DIR, dirs_exist_ok=True)
+    print("✅ unidic ready")
+
+os.environ["MECABRC"] = os.path.join(_UNIDIC_DIR, "mecabrc")
+
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from kokoro_onnx import Kokoro
 from misaki import ja
 import requests
-import os
 import json
 import re
 import io

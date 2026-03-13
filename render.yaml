@@ -3,7 +3,7 @@ services:
     name: japaneseapp-backend
     runtime: python
     rootDir: backend
-    buildCommand: pip install -r requirements.txt && python -m unidic download
+    buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1
     plan: standard         # $25/mo — 2GB RAM (needed for 311MB ONNX model)
     disk:

@@ -5,7 +5,7 @@ services:
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1
-    plan: starter          # $7/mo — 1GB RAM (needed for 311MB ONNX model)
+    plan: standard         # $25/mo — 2GB RAM (needed for 311MB ONNX model)
     disk:
       name: models
       mountPath: /models

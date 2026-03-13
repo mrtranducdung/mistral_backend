@@ -69,7 +69,7 @@ g2p = ja.JAG2P()
 print("✅ Kokoro TTS ready!")
 
 # ── System prompt ─────────────────────────────────────────────────────────────
-SYSTEM_PROMPT = """You are playing a role in a Japanese conversation practice scenario with a Vietnamese learner.
+SYSTEM_PROMPT = """You are playing a role in a Japanese conversation practice scenario with a learner.
 
 ## Your role
 You will be given a context and a specific character to play. Stay in character at ALL times.
@@ -83,19 +83,19 @@ Examples of natural Japanese by role:
 
 ## Language rules
 - **Speak Japanese by default** — stay immersed in the role.
-- **Switch to Vietnamese** ONLY when the learner:
-  1. Speaks Vietnamese to you
-  2. Explicitly asks for explanation (「説明して」「ベトナム語で」"giải thích" "nghĩa là gì")
-- After a Vietnamese explanation, return to Japanese and the role-play.
+- **Switch to {ui_lang_name}** ONLY when the learner:
+  1. Speaks {ui_lang_name} to you
+  2. Explicitly asks for explanation in their language
+- After a {ui_lang_name} explanation, return to Japanese and the role-play.
 - If the learner makes a mistake, gently correct them IN CHARACTER (e.g. repeat the correct phrase naturally).
 
 ## Response format
 Always reply as JSON — no text outside JSON:
 {{
-  "reply_text": "What to DISPLAY. Japanese with furigana for hard kanji e.g. 注文（ちゅうもん）. Or Vietnamese if explaining.",
+  "reply_text": "What to DISPLAY. Japanese with furigana for hard kanji e.g. 注文（ちゅうもん）. Or {ui_lang_name} if explaining.",
   "tts_text": "Japanese to READ ALOUD. Must be natural spoken Japanese. Never empty.",
   "romaji": "Romaji of tts_text",
-  "translation": "Vietnamese meaning of tts_text"
+  "translation": "{ui_lang_name} meaning of tts_text"
 }}
 
 ## Level adjustments
@@ -145,8 +145,14 @@ def chat():
     data    = request.json
     history = data.get("history", [])
     level   = data.get("level", "beginner")
+    ui_lang = data.get("ui_lang", "vi")
+    lang_names = {"vi": "Vietnamese", "en": "English", "ja": "Japanese"}
+    ui_lang_name = lang_names.get(ui_lang, "Vietnamese")
 
-    system   = SYSTEM_PROMPT.format(level_instruction=LEVEL_INSTRUCTIONS.get(level, LEVEL_INSTRUCTIONS["beginner"]))
+    system   = SYSTEM_PROMPT.format(
+        level_instruction=LEVEL_INSTRUCTIONS.get(level, LEVEL_INSTRUCTIONS["beginner"]),
+        ui_lang_name=ui_lang_name
+    )
     messages = [{"role": "system", "content": system}] + history
 
     resp = requests.post(
@@ -208,6 +214,9 @@ def analyze():
     data  = request.json
     text  = data.get("text", "").strip()
     level = data.get("level", "beginner")
+    ui_lang = data.get("ui_lang", "vi")
+    lang_names = {"vi": "Vietnamese", "en": "English", "ja": "Japanese"}
+    ui_lang_name = lang_names.get(ui_lang, "Vietnamese")
 
     if not text:
         return jsonify({"error": "no text"}), 400
@@ -218,9 +227,9 @@ Reply ONLY as JSON, no extra text:
 {{
   "is_japanese": true/false,  // true if the message contains Japanese attempt
   "is_correct": true/false,   // grammatically and naturally correct?
-  "verdict": "one short sentence in Vietnamese summarizing correctness",
+  "verdict": "one short sentence in {ui_lang_name} summarizing correctness",
   "correction": "corrected Japanese sentence if wrong, else null",
-  "tip": "one short Vietnamese tip about grammar/vocabulary/politeness if relevant, else null",
+  "tip": "one short {ui_lang_name} tip about grammar/vocabulary/politeness if relevant, else null",
   "japanese": "if not Japanese input: how to say it in Japanese",
   "romaji": "romaji of japanese field if provided"
 }}
@@ -255,12 +264,15 @@ def translate_word():
 
     data = request.json
     word = data.get("word", "").strip()
+    ui_lang = data.get("ui_lang", "vi")
+    lang_names = {"vi": "Vietnamese", "en": "English", "ja": "Japanese"}
+    ui_lang_name = lang_names.get(ui_lang, "Vietnamese")
     if not word:
         return jsonify({"error": "no word"}), 400
 
-    prompt = f"""Translate this Japanese word or phrase to Vietnamese: "{word}"
+    prompt = f"""Translate this Japanese word or phrase to {ui_lang_name}: "{word}"
 Reply ONLY as JSON, no extra text:
-{{"translation": "nghĩa tiếng Việt ngắn gọn", "romaji": "cách đọc romaji"}}
+{{"translation": "concise {ui_lang_name} meaning (max 8 words)", "romaji": "romaji reading"}}
 Keep translation concise (max 8 words)."""
 
     resp = requests.post(

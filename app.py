@@ -20,7 +20,7 @@ MISTRAL_URL     = "https://api.mistral.ai/v1/chat/completions"
 # ── Download models if not present ────────────────────────────────────────────
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.environ.get("MODELS_DIR", BASE_DIR)
-BASE_URL   = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
+BASE_URL   = "https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0"
 
 os.makedirs(MODELS_DIR, exist_ok=True)
 

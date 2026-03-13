@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from kokoro_onnx import Kokoro
 from misaki import ja
-from huggingface_hub import hf_hub_download
 import requests
 import os
 import json
@@ -18,20 +17,23 @@ CORS(app, origins="*")
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
 MISTRAL_URL     = "https://api.mistral.ai/v1/chat/completions"
 
-# ── Download models from HuggingFace if not present ──────────────────────────
-BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
-MODELS_DIR  = os.environ.get("MODELS_DIR", BASE_DIR)
-HF_REPO     = "hexgrad/Kokoro-82M"
+# ── Download models if not present ────────────────────────────────────────────
+BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
+MODELS_DIR = os.environ.get("MODELS_DIR", BASE_DIR)
+BASE_URL   = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
 
 os.makedirs(MODELS_DIR, exist_ok=True)
 
-def ensure(filename, repo_filename=None):
+def ensure(filename):
     dest = os.path.join(MODELS_DIR, filename)
     if not os.path.exists(dest):
-        repo_file = repo_filename or filename
-        print(f"⬇️  Downloading {filename} from HuggingFace...")
-        src = hf_hub_download(repo_id=HF_REPO, filename=repo_file)
-        os.replace(src, dest)
+        url = f"{BASE_URL}/{filename}"
+        print(f"⬇️  Downloading {filename} ...")
+        with requests.get(url, stream=True) as r:
+            r.raise_for_status()
+            with open(dest, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
         print(f"✅ {filename} ready ({os.path.getsize(dest)//1_000_000} MB)")
     return dest
 

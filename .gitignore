@@ -1,1 +1,6 @@
+*.onnx
+*.bin
+*.pt
+__pycache__/
+*.pyc
 .env

@@ -2,4 +2,9 @@ flask
 flask-cors
 requests
 gunicorn
-gTTS
+kokoro-onnx
+misaki[ja]
+soundfile
+torch
+numpy
+huggingface_hub

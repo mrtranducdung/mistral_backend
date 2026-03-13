@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: japaneseapp-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1
+    plan: starter          # $7/mo — 1GB RAM (needed for 311MB ONNX model)
+    disk:
+      name: models
+      mountPath: /models
+      sizeGB: 2
+    envVars:
+      - key: MODELS_DIR
+        value: /models
+      - key: MISTRAL_API_KEY
+        sync: false        # set manually in Render dashboard
+      - key: PYTHON_VERSION
+        value: "3.11"

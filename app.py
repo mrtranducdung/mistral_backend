@@ -1,72 +1,25 @@
-import os, sys, subprocess, shutil
-
-# ── Setup unidic on persistent disk BEFORE importing misaki ──────────────────
-_MODELS_DIR  = os.environ.get("MODELS_DIR", os.path.dirname(os.path.abspath(__file__)))
-_UNIDIC_DIR  = os.path.join(_MODELS_DIR, "unidic_dicdir")
-
-if not os.path.exists(os.path.join(_UNIDIC_DIR, "mecabrc")):
-    print("⬇️  Downloading unidic dictionary...")
-    subprocess.run([sys.executable, "-m", "unidic", "download"], check=True)
-    import unidic as _u
-    os.makedirs(_UNIDIC_DIR, exist_ok=True)
-    shutil.copytree(_u.DICDIR, _UNIDIC_DIR, dirs_exist_ok=True)
-    print("✅ unidic ready")
-
-os.environ["MECABRC"] = os.path.join(_UNIDIC_DIR, "mecabrc")
-
+import os, re, json
+import requests
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
-from kokoro_onnx import Kokoro
-from misaki import ja
-import requests
-import json
-import re
-import io
-import torch
-import soundfile as sf
-import numpy as np
 
 app = Flask(__name__)
 CORS(app, origins="*")
 
-MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
-MISTRAL_URL     = "https://api.mistral.ai/v1/chat/completions"
+MISTRAL_API_KEY   = os.environ.get("MISTRAL_API_KEY", "")
+MISTRAL_URL       = "https://api.mistral.ai/v1/chat/completions"
 
-# ── Download models if not present ────────────────────────────────────────────
-BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
-MODELS_DIR = os.environ.get("MODELS_DIR", BASE_DIR)
-BASE_URL   = "https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0"
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+ELEVENLABS_URL     = "https://api.elevenlabs.io/v1/text-to-speech"
 
-os.makedirs(MODELS_DIR, exist_ok=True)
-
-def ensure(filename):
-    dest = os.path.join(MODELS_DIR, filename)
-    if not os.path.exists(dest):
-        url = f"{BASE_URL}/{filename}"
-        print(f"⬇️  Downloading {filename} ...")
-        with requests.get(url, stream=True) as r:
-            r.raise_for_status()
-            with open(dest, "wb") as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-        print(f"✅ {filename} ready ({os.path.getsize(dest)//1_000_000} MB)")
-    return dest
-
-ONNX_PATH   = ensure("kokoro-v1.0.onnx")
-VOICES_PATH = ensure("voices-v1.0.bin")
-
-# ── Load Kokoro once at startup ───────────────────────────────────────────────
-kokoro = Kokoro(ONNX_PATH, VOICES_PATH)
-
-VOICES = {
-    "jf_alpha":      torch.load(os.path.join(BASE_DIR, "jf_alpha.pt"),      weights_only=True).numpy(),
-    "jf_gongitsune": torch.load(os.path.join(BASE_DIR, "jf_gongitsune.pt"), weights_only=True).numpy(),
-    "jm_kumo":       torch.load(os.path.join(BASE_DIR, "jm_kumo.pt"),       weights_only=True).numpy(),
+# Map legacy voice names → ElevenLabs voice IDs (multilingual v2, Japanese-capable)
+# Override via env vars if needed
+VOICE_IDS = {
+    "jf_alpha":      os.environ.get("VOICE_JF_ALPHA",      "EXAVITQu4vr4xnSDxMaL"),  # Sarah (F)
+    "jf_gongitsune": os.environ.get("VOICE_JF_GONGITSUNE", "9BWtsMINqrJLrRacOk9x"),  # Aria  (F)
+    "jm_kumo":       os.environ.get("VOICE_JM_KUMO",       "IKne3meq5aSn9XLyUdCD"),  # Charlie (M)
 }
 DEFAULT_VOICE = "jf_alpha"
-
-g2p = ja.JAG2P()
-print("✅ Kokoro TTS ready!")
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """You are playing a role in a Japanese conversation practice scenario with a learner.
@@ -174,6 +127,9 @@ def chat():
 
 @app.route("/tts", methods=["POST"])
 def tts():
+    if not ELEVENLABS_API_KEY:
+        return jsonify({"error": "ELEVENLABS_API_KEY not set"}), 500
+
     data       = request.json
     text       = data.get("text", "").strip()
     voice_name = data.get("voice", DEFAULT_VOICE)
@@ -181,29 +137,24 @@ def tts():
     if not text:
         return jsonify({"error": "no text"}), 400
 
-    voice_data = VOICES.get(voice_name, VOICES[DEFAULT_VOICE])
+    voice_id = VOICE_IDS.get(voice_name, VOICE_IDS[DEFAULT_VOICE])
 
-    try:
-        # Phonemize Japanese text
-        phonemes, _ = g2p(text)
+    resp = requests.post(
+        f"{ELEVENLABS_URL}/{voice_id}",
+        headers={
+            "xi-api-key": ELEVENLABS_API_KEY,
+            "Content-Type": "application/json",
+        },
+        json={
+            "text": text,
+            "model_id": "eleven_multilingual_v2",
+            "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+        },
+    )
+    if not resp.ok:
+        return jsonify({"error": resp.text}), resp.status_code
 
-        # Generate audio
-        samples, sample_rate = kokoro.create(
-            phonemes,
-            voice=voice_data,
-            speed=1.0,
-            lang="ja",
-            is_phonemes=True
-        )
-
-        # Write to buffer as WAV
-        buf = io.BytesIO()
-        sf.write(buf, samples, sample_rate, format="WAV")
-        buf.seek(0)
-        return Response(buf.read(), mimetype="audio/wav")
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return Response(resp.content, mimetype="audio/mpeg")
 
 
 @app.route("/analyze", methods=["POST"])
@@ -251,12 +202,6 @@ Be concise. verdict max 10 words. tip max 15 words."""
         return jsonify({"error": "parse error"}), 500
 
 
-
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({"status": "ok", "tts": "kokoro"})
-
-
 @app.route("/translate", methods=["POST"])
 def translate_word():
     if not MISTRAL_API_KEY:
@@ -288,6 +233,11 @@ Keep translation concise (max 8 words)."""
         return jsonify(extract_json(raw))
     except Exception:
         return jsonify({"error": "parse error"}), 500
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok", "tts": "elevenlabs"})
 
 
 if __name__ == "__main__":

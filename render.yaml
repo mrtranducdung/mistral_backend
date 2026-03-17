@@ -1,15 +1,15 @@
 services:
   - type: web
     name: japaneseapp-backend
-    runtime: python
+    runtime: node
     rootDir: backend
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1
+    buildCommand: npm install
+    startCommand: node app.js
     plan: free
     envVars:
       - key: MISTRAL_API_KEY
-        sync: false        # set manually in Render dashboard
+        sync: false
       - key: ELEVENLABS_API_KEY
-        sync: false        # set manually in Render dashboard
-      - key: PYTHON_VERSION
-        value: "3.11"
+        sync: false
+      - key: NODE_VERSION
+        value: "20"

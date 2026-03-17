@@ -1,8 +1,10 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
 
 const app = Fastify();
 await app.register(cors, { origin: "*" });
+await app.register(multipart);
 
 const MISTRAL_API_KEY    = process.env.MISTRAL_API_KEY    ?? "";
 const MISTRAL_URL        = "https://api.mistral.ai/v1/chat/completions";
@@ -180,7 +182,29 @@ Reply ONLY as JSON, no extra text:
   }
 });
 
-app.get("/health", () => ({ status: "ok", tts: "elevenlabs" }));
+app.post("/stt", async (req, reply) => {
+  if (!ELEVENLABS_API_KEY) return reply.code(500).send({ error: "ELEVENLABS_API_KEY not set" });
+
+  const data = await req.file();
+  if (!data) return reply.code(400).send({ error: "no audio" });
+
+  const buffer = await data.toBuffer();
+  const form = new FormData();
+  form.append("file", new Blob([buffer], { type: data.mimetype || "audio/webm" }), "audio.webm");
+  form.append("model_id", "scribe_v1");
+
+  const res = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
+    method: "POST",
+    headers: { "xi-api-key": ELEVENLABS_API_KEY },
+    body: form,
+  });
+
+  if (!res.ok) return reply.code(res.status).send({ error: await res.text() });
+  const result = await res.json();
+  return { text: result.text ?? "" };
+});
+
+app.get("/health", () => ({ status: "ok", tts: "elevenlabs", stt: "elevenlabs" }));
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 const port = parseInt(process.env.PORT ?? "5000");

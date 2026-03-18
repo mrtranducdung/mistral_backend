@@ -17,11 +17,11 @@ const ELEVENLABS_API_KEY  = process.env.ELEVENLABS_API_KEY ?? "";
 const ELEVENLABS_URL      = "https://api.elevenlabs.io/v1/text-to-speech";
 
 const VOICE_IDS = {
-  jf_alpha:      process.env.VOICE_JF_ALPHA      ?? "EXAVITQu4vr4xnSDxMaL",
-  jf_gongitsune: process.env.VOICE_JF_GONGITSUNE ?? "9BWtsMINqrJLrRacOk9x",
-  jm_kumo:       process.env.VOICE_JM_KUMO       ?? "IKne3meq5aSn9XLyUdCD",
+  yuki:   "JTlYtJrcTzPC71hMLOxo",
+  sakura: "EGPLqH9Wz2tNLu58EJVR",
+  otani:  "3JDquces8E8bkmvbh6Bc",
 };
-const DEFAULT_VOICE = "jf_alpha";
+const DEFAULT_VOICE = "yuki";
 const LANG_NAMES = { vi: "Vietnamese", en: "English", ja: "Japanese" };
 
 // ── Database ──────────────────────────────────────────────────────────────────

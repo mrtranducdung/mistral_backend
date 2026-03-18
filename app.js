@@ -269,13 +269,21 @@ app.post("/stt", async (req, reply) => {
       return reply.code(402).send({ error: "limit_reached", used, limit: FREE_DAILY_SECONDS });
   }
 
-  const data = await req.file();
-  if (!data) return reply.code(400).send({ error: "no audio" });
+  let audioBuffer, audioMime, langCode = "ja";
+  for await (const part of req.parts()) {
+    if (part.type === "file" && part.fieldname === "file") {
+      audioBuffer = await part.toBuffer();
+      audioMime   = part.mimetype || "audio/webm";
+    } else if (part.type === "field" && part.fieldname === "lang") {
+      langCode = part.value || "ja";
+    }
+  }
+  if (!audioBuffer) return reply.code(400).send({ error: "no audio" });
 
-  const buffer = await data.toBuffer();
   const form = new FormData();
-  form.append("file", new Blob([buffer], { type: data.mimetype || "audio/webm" }), "audio.webm");
+  form.append("file", new Blob([audioBuffer], { type: audioMime }), "audio.webm");
   form.append("model_id", "scribe_v1");
+  form.append("language_code", langCode);
 
   const res = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
     method: "POST",

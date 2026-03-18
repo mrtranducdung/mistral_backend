@@ -45,7 +45,11 @@ db.exec(`
 
 // ── Fastify ───────────────────────────────────────────────────────────────────
 const app = Fastify();
-await app.register(cors, { origin: "*" });
+await app.register(cors, {
+  origin: "*",
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+});
 await app.register(multipart);
 
 // ── Auth helpers ──────────────────────────────────────────────────────────────

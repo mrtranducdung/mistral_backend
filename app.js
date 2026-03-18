@@ -1,15 +1,20 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
+import Database from "better-sqlite3";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import path from "path";
+import { fileURLToPath } from "url";
 
-const app = Fastify();
-await app.register(cors, { origin: "*" });
-await app.register(multipart);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const MISTRAL_API_KEY    = process.env.MISTRAL_API_KEY    ?? "";
-const MISTRAL_URL        = "https://api.mistral.ai/v1/chat/completions";
-const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY ?? "";
-const ELEVENLABS_URL     = "https://api.elevenlabs.io/v1/text-to-speech";
+const JWT_SECRET          = process.env.JWT_SECRET ?? "dev_secret_change_in_prod";
+const FREE_DAILY_SECONDS  = 600; // 10 minutes
+const MISTRAL_API_KEY     = process.env.MISTRAL_API_KEY    ?? "";
+const MISTRAL_URL         = "https://api.mistral.ai/v1/chat/completions";
+const ELEVENLABS_API_KEY  = process.env.ELEVENLABS_API_KEY ?? "";
+const ELEVENLABS_URL      = "https://api.elevenlabs.io/v1/text-to-speech";
 
 const VOICE_IDS = {
   jf_alpha:      process.env.VOICE_JF_ALPHA      ?? "EXAVITQu4vr4xnSDxMaL",
@@ -17,16 +22,59 @@ const VOICE_IDS = {
   jm_kumo:       process.env.VOICE_JM_KUMO       ?? "IKne3meq5aSn9XLyUdCD",
 };
 const DEFAULT_VOICE = "jf_alpha";
-
 const LANG_NAMES = { vi: "Vietnamese", en: "English", ja: "Japanese" };
 
-const LEVEL_INSTRUCTIONS = {
-  beginner:     "Learner is a complete beginner (JLPT N5). Use simple Japanese but NEVER sacrifice politeness for simplicity — staff/service roles must still use proper keigo (いらっしゃいませ、何になさいますか、～でございます). Add furigana for all kanji in reply_text.",
-  elementary:   "Learner is elementary (JLPT N5-N4). Use simple natural Japanese. Service roles use proper keigo. Add furigana for harder kanji.",
-  intermediate: "Learner is intermediate (JLPT N3-N4). Use natural Japanese appropriate to the role. Service roles use keigo, friends use casual speech. Furigana only for N2+ kanji.",
-  advanced:     "Learner is advanced (JLPT N1-N2). Use fully natural Japanese. Keigo for formal roles, casual/slang for friend roles. No furigana needed.",
+// ── Database ──────────────────────────────────────────────────────────────────
+const db = new Database(process.env.DB_PATH ?? path.join(__dirname, "data.db"));
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    email         TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    is_premium    INTEGER DEFAULT 0,
+    created_at    TEXT DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS daily_usage (
+    user_id INTEGER NOT NULL,
+    date    TEXT    NOT NULL,
+    seconds INTEGER DEFAULT 0,
+    PRIMARY KEY (user_id, date),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+`);
+
+// ── Fastify ───────────────────────────────────────────────────────────────────
+const app = Fastify();
+await app.register(cors, { origin: "*" });
+await app.register(multipart);
+
+// ── Auth helpers ──────────────────────────────────────────────────────────────
+const signToken = (user) =>
+  jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: "30d" });
+
+const getAuthUser = (req) => {
+  const auth = req.headers.authorization;
+  if (!auth?.startsWith("Bearer ")) return null;
+  try { return jwt.verify(auth.slice(7), JWT_SECRET); }
+  catch { return null; }
 };
 
+const requireAuth = (req, reply) => {
+  const u = getAuthUser(req);
+  if (!u) { reply.code(401).send({ error: "Unauthorized" }); return null; }
+  return u;
+};
+
+// ── Usage helpers ─────────────────────────────────────────────────────────────
+const today   = () => new Date().toISOString().slice(0, 10);
+const getUsed = (uid) =>
+  db.prepare("SELECT seconds FROM daily_usage WHERE user_id=? AND date=?").get(uid, today())?.seconds ?? 0;
+const addUsed = (uid, secs) =>
+  db.prepare(`INSERT INTO daily_usage (user_id,date,seconds) VALUES (?,?,?)
+    ON CONFLICT(user_id,date) DO UPDATE SET seconds=seconds+?`
+  ).run(uid, today(), secs, secs);
+
+// ── System prompt ─────────────────────────────────────────────────────────────
 const SYSTEM_PROMPT = `You are playing a role in a Japanese conversation practice scenario with a learner.
 
 ## Your role
@@ -72,6 +120,13 @@ One response = action/statement + follow-up question. Never just a statement alo
 - Keep responses SHORT and natural (1-3 sentences) like real conversation
 - tts_text must be PURE Japanese with no romaji, brackets, or annotations`;
 
+const LEVEL_INSTRUCTIONS = {
+  beginner:     "Learner is a complete beginner (JLPT N5). Use simple Japanese but NEVER sacrifice politeness for simplicity — staff/service roles must still use proper keigo (いらっしゃいませ、何になさいますか、～でございます). Add furigana for all kanji in reply_text.",
+  elementary:   "Learner is elementary (JLPT N5-N4). Use simple natural Japanese. Service roles use proper keigo. Add furigana for harder kanji.",
+  intermediate: "Learner is intermediate (JLPT N3-N4). Use natural Japanese appropriate to the role. Service roles use keigo, friends use casual speech. Furigana only for N2+ kanji.",
+  advanced:     "Learner is advanced (JLPT N1-N2). Use fully natural Japanese. Keigo for formal roles, casual/slang for friend roles. No furigana needed.",
+};
+
 function buildSystemPrompt(level, uiLangName) {
   return SYSTEM_PROMPT
     .replaceAll("{ui_lang_name}", uiLangName)
@@ -93,9 +148,62 @@ async function mistral(messages, maxTokens = 600, temperature = 0.7) {
   return (await res.json()).choices[0].message.content;
 }
 
-// ── Routes ────────────────────────────────────────────────────────────────────
+// ── Auth routes ───────────────────────────────────────────────────────────────
+app.post("/auth/register", async (req, reply) => {
+  const { email, password } = req.body ?? {};
+  if (!email || !password) return reply.code(400).send({ error: "Email and password required" });
+  if (password.length < 6) return reply.code(400).send({ error: "Password min 6 characters" });
+
+  const hash = await bcrypt.hash(password, 10);
+  try {
+    const { lastInsertRowid } = db.prepare(
+      "INSERT INTO users (email, password_hash) VALUES (?,?)"
+    ).run(email.toLowerCase().trim(), hash);
+    const user = db.prepare("SELECT * FROM users WHERE id=?").get(lastInsertRowid);
+    return { token: signToken(user), user: { id: user.id, email: user.email, is_premium: !!user.is_premium } };
+  } catch (e) {
+    if (e.message?.includes("UNIQUE")) return reply.code(409).send({ error: "Email already registered" });
+    throw e;
+  }
+});
+
+app.post("/auth/login", async (req, reply) => {
+  const { email, password } = req.body ?? {};
+  const user = db.prepare("SELECT * FROM users WHERE email=?").get(email?.toLowerCase().trim());
+  if (!user || !(await bcrypt.compare(password ?? "", user.password_hash)))
+    return reply.code(401).send({ error: "Invalid email or password" });
+  return { token: signToken(user), user: { id: user.id, email: user.email, is_premium: !!user.is_premium } };
+});
+
+app.get("/auth/me", (req, reply) => {
+  const auth = requireAuth(req, reply);
+  if (!auth) return;
+  const user = db.prepare("SELECT * FROM users WHERE id=?").get(auth.id);
+  if (!user) return reply.code(404).send({ error: "User not found" });
+  return {
+    user: { id: user.id, email: user.email, is_premium: !!user.is_premium },
+    usage: { used: getUsed(user.id), limit: FREE_DAILY_SECONDS },
+  };
+});
+
+// ── Payment ───────────────────────────────────────────────────────────────────
+app.post("/payment/activate", (req, reply) => {
+  const auth = requireAuth(req, reply);
+  if (!auth) return;
+  db.prepare("UPDATE users SET is_premium=1 WHERE id=?").run(auth.id);
+  const user = db.prepare("SELECT * FROM users WHERE id=?").get(auth.id);
+  return {
+    success: true,
+    token: signToken(user),
+    user: { id: user.id, email: user.email, is_premium: true },
+  };
+});
+
+// ── Chat ──────────────────────────────────────────────────────────────────────
 app.post("/chat", async (req, reply) => {
   if (!MISTRAL_API_KEY) return reply.code(500).send({ error: "MISTRAL_API_KEY not set" });
+  const auth = requireAuth(req, reply);
+  if (!auth) return;
 
   const { history = [], level = "beginner", ui_lang = "vi" } = req.body;
   const uiLangName = LANG_NAMES[ui_lang] ?? "Vietnamese";
@@ -110,8 +218,18 @@ app.post("/chat", async (req, reply) => {
   }
 });
 
+// ── TTS ───────────────────────────────────────────────────────────────────────
 app.post("/tts", async (req, reply) => {
   if (!ELEVENLABS_API_KEY) return reply.code(500).send({ error: "ELEVENLABS_API_KEY not set" });
+  const auth = requireAuth(req, reply);
+  if (!auth) return;
+
+  const user = db.prepare("SELECT * FROM users WHERE id=?").get(auth.id);
+  if (!user.is_premium) {
+    const used = getUsed(auth.id);
+    if (used >= FREE_DAILY_SECONDS)
+      return reply.code(402).send({ error: "limit_reached", used, limit: FREE_DAILY_SECONDS });
+  }
 
   const { text = "", voice = DEFAULT_VOICE } = req.body;
   if (!text.trim()) return reply.code(400).send({ error: "no text" });
@@ -126,15 +244,53 @@ app.post("/tts", async (req, reply) => {
       voice_settings: { stability: 0.5, similarity_boost: 0.75 },
     }),
   });
-
   if (!res.ok) return reply.code(res.status).send({ error: await res.text() });
+
+  if (!user.is_premium) addUsed(auth.id, Math.ceil(text.length / 3));
 
   reply.header("Content-Type", "audio/mpeg");
   return reply.send(Buffer.from(await res.arrayBuffer()));
 });
 
+// ── STT ───────────────────────────────────────────────────────────────────────
+app.post("/stt", async (req, reply) => {
+  if (!ELEVENLABS_API_KEY) return reply.code(500).send({ error: "ELEVENLABS_API_KEY not set" });
+  const auth = requireAuth(req, reply);
+  if (!auth) return;
+
+  const user = db.prepare("SELECT * FROM users WHERE id=?").get(auth.id);
+  if (!user.is_premium) {
+    const used = getUsed(auth.id);
+    if (used >= FREE_DAILY_SECONDS)
+      return reply.code(402).send({ error: "limit_reached", used, limit: FREE_DAILY_SECONDS });
+  }
+
+  const data = await req.file();
+  if (!data) return reply.code(400).send({ error: "no audio" });
+
+  const buffer = await data.toBuffer();
+  const form = new FormData();
+  form.append("file", new Blob([buffer], { type: data.mimetype || "audio/webm" }), "audio.webm");
+  form.append("model_id", "scribe_v1");
+
+  const res = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
+    method: "POST",
+    headers: { "xi-api-key": ELEVENLABS_API_KEY },
+    body: form,
+  });
+  if (!res.ok) return reply.code(res.status).send({ error: await res.text() });
+
+  if (!user.is_premium) addUsed(auth.id, 10);
+
+  const result = await res.json();
+  return { text: result.text ?? "" };
+});
+
+// ── Analyze ───────────────────────────────────────────────────────────────────
 app.post("/analyze", async (req, reply) => {
   if (!MISTRAL_API_KEY) return reply.code(500).send({ error: "MISTRAL_API_KEY not set" });
+  const auth = requireAuth(req, reply);
+  if (!auth) return;
 
   const { text = "", level = "beginner", ui_lang = "vi" } = req.body;
   if (!text.trim()) return reply.code(400).send({ error: "no text" });
@@ -163,8 +319,11 @@ Be concise. verdict max 10 words. tip max 15 words.`;
   }
 });
 
+// ── Translate ─────────────────────────────────────────────────────────────────
 app.post("/translate", async (req, reply) => {
   if (!MISTRAL_API_KEY) return reply.code(500).send({ error: "MISTRAL_API_KEY not set" });
+  const auth = requireAuth(req, reply);
+  if (!auth) return;
 
   const { word = "", ui_lang = "vi" } = req.body;
   if (!word.trim()) return reply.code(400).send({ error: "no word" });
@@ -182,28 +341,7 @@ Reply ONLY as JSON, no extra text:
   }
 });
 
-app.post("/stt", async (req, reply) => {
-  if (!ELEVENLABS_API_KEY) return reply.code(500).send({ error: "ELEVENLABS_API_KEY not set" });
-
-  const data = await req.file();
-  if (!data) return reply.code(400).send({ error: "no audio" });
-
-  const buffer = await data.toBuffer();
-  const form = new FormData();
-  form.append("file", new Blob([buffer], { type: data.mimetype || "audio/webm" }), "audio.webm");
-  form.append("model_id", "scribe_v1");
-
-  const res = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
-    method: "POST",
-    headers: { "xi-api-key": ELEVENLABS_API_KEY },
-    body: form,
-  });
-
-  if (!res.ok) return reply.code(res.status).send({ error: await res.text() });
-  const result = await res.json();
-  return { text: result.text ?? "" };
-});
-
+// ── Health ────────────────────────────────────────────────────────────────────
 app.get("/health", () => ({ status: "ok", tts: "elevenlabs", stt: "elevenlabs" }));
 
 // ── Start ─────────────────────────────────────────────────────────────────────
